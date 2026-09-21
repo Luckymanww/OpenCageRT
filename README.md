@@ -23,45 +23,70 @@ Interactive captures are not the published method. Clone, build, then:
 
 Classic unique BLAS is skipped above 4096 instances (TDR risk). 25k is CageRT-only.
 
-## Measured on RTX 3090 (Classic Rebuild, previous interactive capture)
+## Measured on RTX 3090
 
-These rows predate Classic Update and the CSV harness. Re-run `--benchmark` for the three-column table.
+Solo views, same scene, GPU timestamps from the HUD. Cage overlay (`G`) was on, so CageRT RT/FPS are slightly pessimistic. Tracked RT memory includes the Classic staging+DEFAULT vertex buffers.
 
-| Mode            | Instances | Tracked RT mem | AS update | RT | FPS (solo) |
-|-----------------|----------:|---------------:|----------:|---:|-----------:|
-| Classic Rebuild | 64 | 4.50 MB | 9 ms | *combined split* | — |
-| CageRT | 64 | 0.69 MB | 0.1 ms | *combined split* | — |
-| Classic Rebuild | 1024 | **68.69 MB** | **150 ms** | *combined split* | ~6 |
-| CageRT | 1024 | **1.94 MB** | **0.3 ms** | *combined split* | **390** |
-| CageRT | 25000 | **34.56 MB** | **11.6 ms** | 1.0 ms | **30** |
+`--parity` passed on this machine. `--benchmark` CSV (warmup 60 / 240 frames) is still the formal reproduce path; these rows are the interactive three-column capture.
 
-Target table after `--benchmark` (fill from `results.csv`):
+### 1024 plants (flagship)
 
-| Mode            | AS memory | AS update | RT | FPS |
-|-----------------|----------:|----------:|---:|----:|
-| Classic Rebuild | measured | measured | measured | measured |
-| Classic Update  | measured | measured | measured | measured |
-| CageRT          | measured | measured | measured | measured |
+| Mode            | Tracked RT mem | AS update | RT | FPS |
+|-----------------|---------------:|----------:|---:|----:|
+| Classic Rebuild | 73.06 MB | **150.6 ms** | 0.10 ms | 6 |
+| Classic Update  | 73.06 MB | **14.8 ms** | 0.10 ms | 33 |
+| CageRT          | **1.94 MB** | **0.55 ms** | 0.58 ms | **138** |
 
-Split 64 — same field, memory bars:
+Even against DXR refit, CageRT is **×38** less tracked RT memory and **×27** faster AS update.
 
-![Split 64](docs/screenshots/split-64.png)
+Classic Update 1024:
 
-Split 1024 — Classic Rebuild 68.69 MB vs CageRT 1.94 MB (**x35**):
+![Classic Update 1024](docs/screenshots/classic-update-1024.png)
 
-![Split 1024](docs/screenshots/split-1024.png)
+Classic Rebuild 1024:
 
-Classic solo 1024 (unique BLAS rebuild):
+![Classic Rebuild 1024](docs/screenshots/classic-rebuild-1024.png)
 
-![Classic 1024](docs/screenshots/classic-1024.png)
-
-CageRT solo 1024 (shared static μBLASes):
+CageRT 1024 (shared static μBLASes):
 
 ![CageRT 1024](docs/screenshots/cagert-1024.png)
+
+### Full ladder
+
+| Instances | Mode            | Tracked RT mem | AS update | FPS |
+|----------:|-----------------|---------------:|----------:|----:|
+| 64 | Classic Rebuild | 4.81 MB | 9.3 ms | 70 |
+| 64 | Classic Update | 4.81 MB | 2.0 ms | 141 |
+| 64 | CageRT | 0.69 MB | 0.4 ms | 124 |
+| 1024 | Classic Rebuild | 73.06 MB | 150.6 ms | 6 |
+| 1024 | Classic Update | 73.06 MB | 14.8 ms | 33 |
+| 1024 | CageRT | 1.94 MB | 0.55 ms | 138 |
+| 4096 | Classic Rebuild | 291.75 MB | 61.1 ms | 8 |
+| 4096 | Classic Update | 291.75 MB | 59.7 ms | 8 |
+| 4096 | CageRT | 6.12 MB | 0.36 ms | 154 |
+| 25000 | CageRT | 34.56 MB | 10.8 ms | 26 |
+
+4096 Classic unique BLAS is the last Classic rung (`kClassicUniqueBlasMax`). 25k is CageRT-only.
+
+Classic Update 4096 (292 MB / 60 ms / 8 FPS):
+
+![Classic Update 4096](docs/screenshots/classic-update-4096.png)
+
+CageRT 4096 (6.12 MB / 0.4 ms / 154 FPS):
+
+![CageRT 4096](docs/screenshots/cagert-4096.png)
 
 CageRT 25 000 plants (~9.7M triangles):
 
 ![CageRT 25k](docs/screenshots/cagert-25k.png)
+
+Split 64:
+
+![Split 64](docs/screenshots/split-64.png)
+
+Split 1024:
+
+![Split 1024](docs/screenshots/split-1024.png)
 
 ## Keys
 
