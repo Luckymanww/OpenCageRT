@@ -19,27 +19,28 @@ Interactive captures are not the published method. Clone, build, then:
 .\OpenCageRTDemo.exe --parity
 ```
 
-`--benchmark` runs three solo paths (Classic Rebuild, Classic Update, CageRT), vsync off, and writes median / p95 plus GPU, driver, resolution, and git hash. `--parity` freezes a 64-instance field and compares Classic vs CageRT barycentric RGB (HUD off). Do not quote a speedup unless `--parity` exits 0.
+`--benchmark` runs three solo paths (Classic Rebuild, Classic Update, CageRT), vsync off, and writes median / p95 plus GPU, driver, resolution, and git hash. Published RTX 3090 rows: [`docs/benchmarks/rtx3090-2026-09-21.csv`](docs/benchmarks/rtx3090-2026-09-21.csv). `--parity` freezes a 64-instance field and compares Classic vs CageRT barycentric RGB (HUD off). Do not quote a speedup unless `--parity` exits 0.
 
 Classic unique BLAS is skipped above 4096 instances (TDR risk). 25k is CageRT-only.
 
 ## Measured on RTX 3090
 
-Solo views, same scene, GPU timestamps from the HUD. Cage overlay (`G`) was on, so CageRT RT/FPS are slightly pessimistic. Tracked RT memory includes the Classic staging+DEFAULT vertex buffers.
+Source: [`docs/benchmarks/rtx3090-2026-09-21.csv`](docs/benchmarks/rtx3090-2026-09-21.csv)  
+`--benchmark --warmup 60 --frames 240`, vsync off, HUD/cages off, median (p95 in CSV). Driver 32.0.16.1692. `--parity` passed.
 
-`--parity` passed on this machine. Flagship numbers below are the **1024** interactive solo capture. 4096 Classic Rebuild is **preliminary** (HUD showed ~61 ms vs 151 ms at 1024 — that does not scale, so it is not a published result until `results.csv` confirms it).
+64 plants ran at 1280×720; 1024 / 4096 / 25k at 1920×1009 after the window was maximized. Compare modes inside a rung, not FPS across rungs.
 
 ### 1024 plants (flagship)
 
-| Mode            | Tracked RT mem | AS update | RT | FPS |
-|-----------------|---------------:|----------:|---:|----:|
-| Classic Rebuild | 73.06 MB | **150.6 ms** | 0.10 ms | 6 |
-| Classic Update  | 73.06 MB | **14.8 ms** | 0.10 ms | 33 |
-| CageRT          | **1.94 MB** | **0.55 ms** | 0.58 ms | **138** |
+| Mode            | Tracked RT mem | AS update (median) | RT (median) | FPS (median) |
+|-----------------|---------------:|-------------------:|------------:|-------------:|
+| Classic Rebuild | 73.06 MB | **150.0 ms** | 0.17 ms | 5.9 |
+| Classic Update  | 73.06 MB | **15.7 ms** | 0.17 ms | 31.5 |
+| CageRT          | **1.94 MB** | **0.16 ms** | 0.23 ms | **144** |
 
-Even against DXR refit, CageRT is **×38** less tracked RT memory and **×27** faster AS update.
+Against honest DXR **Update/Refit**: **×38** less tracked RT memory, **×96** faster AS update.
 
-Classic Update 1024:
+Classic Update 1024 (HUD capture; CSV is the published row):
 
 ![Classic Update 1024](docs/screenshots/classic-update-1024.png)
 
@@ -51,28 +52,28 @@ CageRT 1024 (shared static μBLASes):
 
 ![CageRT 1024](docs/screenshots/cagert-1024.png)
 
-### Full ladder
+### Full ladder (CSV median)
 
 | Instances | Mode            | Tracked RT mem | AS update | FPS |
 |----------:|-----------------|---------------:|----------:|----:|
-| 64 | Classic Rebuild | 4.81 MB | 9.3 ms | 70 |
-| 64 | Classic Update | 4.81 MB | 2.0 ms | 141 |
-| 64 | CageRT | 0.69 MB | 0.4 ms | 124 |
-| 1024 | Classic Rebuild | 73.06 MB | 150.6 ms | 6 |
-| 1024 | Classic Update | 73.06 MB | 14.8 ms | 33 |
-| 1024 | CageRT | 1.94 MB | 0.55 ms | 138 |
-| 4096 | Classic Rebuild | 291.75 MB | *preliminary* | 8 |
-| 4096 | Classic Update | 291.75 MB | *preliminary* | 8 |
-| 4096 | CageRT | 6.12 MB | 0.36 ms | 154 |
-| 25000 | CageRT | 34.56 MB | 10.8 ms | 26 |
+| 64 | Classic Rebuild | 4.81 MB | 9.82 ms | 72 |
+| 64 | Classic Update | 4.81 MB | 0.97 ms | 144 |
+| 64 | CageRT | 0.69 MB | 0.14 ms | 144 |
+| 1024 | Classic Rebuild | 73.06 MB | 150.0 ms | 5.9 |
+| 1024 | Classic Update | 73.06 MB | 15.7 ms | 31.5 |
+| 1024 | CageRT | 1.94 MB | 0.16 ms | 144 |
+| 4096 | Classic Rebuild | 291.75 MB | **592 ms** | 1.5 |
+| 4096 | Classic Update | 291.75 MB | 60.4 ms | 8.2 |
+| 4096 | CageRT | 6.13 MB | 0.31 ms | 144 |
+| 25000 | CageRT | 34.56 MB | 7.66 ms | 28 |
 
-4096 Classic unique BLAS is the last Classic rung (`kClassicUniqueBlasMax`). Do not quote 4096 Rebuild/Update AS ms from the HUD: 4× instances cannot be faster than 1024 Rebuild until the CSV harness says so. 25k is CageRT-only.
+4096 HUD Rebuild (~61 ms) was a bad frame / wrong mode: CSV Rebuild is **592 ms**, Update is **60 ms**. Interactive HUD is not the source of truth. 25k is CageRT-only.
 
-Classic Update 4096 (292 MB / 60 ms / 8 FPS):
+Classic Update 4096:
 
 ![Classic Update 4096](docs/screenshots/classic-update-4096.png)
 
-CageRT 4096 (6.12 MB / 0.4 ms / 154 FPS):
+CageRT 4096:
 
 ![CageRT 4096](docs/screenshots/cagert-4096.png)
 
