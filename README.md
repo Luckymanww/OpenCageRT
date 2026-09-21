@@ -27,7 +27,7 @@ Classic unique BLAS is skipped above 4096 instances (TDR risk). 25k is CageRT-on
 
 Solo views, same scene, GPU timestamps from the HUD. Cage overlay (`G`) was on, so CageRT RT/FPS are slightly pessimistic. Tracked RT memory includes the Classic staging+DEFAULT vertex buffers.
 
-`--parity` passed on this machine. `--benchmark` CSV (warmup 60 / 240 frames) is still the formal reproduce path; these rows are the interactive three-column capture.
+`--parity` passed on this machine. Flagship numbers below are the **1024** interactive solo capture. 4096 Classic Rebuild is **preliminary** (HUD showed ~61 ms vs 151 ms at 1024 — that does not scale, so it is not a published result until `results.csv` confirms it).
 
 ### 1024 plants (flagship)
 
@@ -61,12 +61,12 @@ CageRT 1024 (shared static μBLASes):
 | 1024 | Classic Rebuild | 73.06 MB | 150.6 ms | 6 |
 | 1024 | Classic Update | 73.06 MB | 14.8 ms | 33 |
 | 1024 | CageRT | 1.94 MB | 0.55 ms | 138 |
-| 4096 | Classic Rebuild | 291.75 MB | 61.1 ms | 8 |
-| 4096 | Classic Update | 291.75 MB | 59.7 ms | 8 |
+| 4096 | Classic Rebuild | 291.75 MB | *preliminary* | 8 |
+| 4096 | Classic Update | 291.75 MB | *preliminary* | 8 |
 | 4096 | CageRT | 6.12 MB | 0.36 ms | 154 |
 | 25000 | CageRT | 34.56 MB | 10.8 ms | 26 |
 
-4096 Classic unique BLAS is the last Classic rung (`kClassicUniqueBlasMax`). 25k is CageRT-only.
+4096 Classic unique BLAS is the last Classic rung (`kClassicUniqueBlasMax`). Do not quote 4096 Rebuild/Update AS ms from the HUD: 4× instances cannot be faster than 1024 Rebuild until the CSV harness says so. 25k is CageRT-only.
 
 Classic Update 4096 (292 MB / 60 ms / 8 FPS):
 
