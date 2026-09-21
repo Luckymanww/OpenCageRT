@@ -38,6 +38,8 @@ class D3D12App {
   void tick_tour();
   void fill_adapter_metrics(opencagert::DemoMetrics& metrics) const;
   opencagert::TriLadder ladder_for_instances(uint32_t instances) const;
+  bool pump_messages();
+  void set_run_title(const std::wstring& extra);
 
   HWND hwnd_ = nullptr;
   uint32_t width_ = 0;
@@ -77,4 +79,5 @@ class D3D12App {
   float dxgi_baseline_mb_ = 0.f;
   std::string gpu_name_;
   std::string driver_version_;
+  std::wstring run_status_;
 };

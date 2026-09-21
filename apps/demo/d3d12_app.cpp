@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <cstring>
 #include <cwchar>
 
 using Microsoft::WRL::ComPtr;
@@ -245,7 +246,9 @@ void D3D12App::render_frame() {
                 static_cast<float>(qpc_freq_.QuadPart);
   }
   qpc_last_ = now;
-  if ((frame_counter_ % 20) == 0) {
+  if ((frame_counter_ % 20) == 0 && !run_status_.empty()) {
+    set_run_title(run_status_);
+  } else if ((frame_counter_ % 20) == 0) {
     refresh_title();
   }
   tick_tour();
@@ -475,6 +478,25 @@ opencagert::TriLadder D3D12App::ladder_for_instances(uint32_t instances) const {
   return opencagert::TriLadder::Count;
 }
 
+bool D3D12App::pump_messages() {
+  MSG msg{};
+  while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+    if (msg.message == WM_QUIT) {
+      return false;
+    }
+    TranslateMessage(&msg);
+    DispatchMessage(&msg);
+  }
+  return true;
+}
+
+void D3D12App::set_run_title(const std::wstring& extra) {
+  if (!hwnd_) {
+    return;
+  }
+  SetWindowTextW(hwnd_, extra.c_str());
+}
+
 int D3D12App::run_benchmark(const BenchmarkCli& cli, std::string& error) {
   if (!dxr_micro_.is_active()) {
     error = "DXR is not active; cannot benchmark";
@@ -518,8 +540,25 @@ int D3D12App::run_benchmark(const BenchmarkCli& cli, std::string& error) {
       }
       demo_.view_mode = mode.view;
       demo_.classic_blas_mode = mode.classic;
-      for (uint32_t i = 0; i < cli.warmup; ++i) {
+      auto tick = [&](const wchar_t* phase, uint32_t i, uint32_t n) -> bool {
+        if (!pump_messages()) {
+          error = "benchmark cancelled";
+          out.flush();
+          return false;
+        }
+        std::wostringstream title;
+        std::wstring wmode(mode.name, mode.name + std::strlen(mode.name));
+        title << L"BENCHMARK do not close | " << wmode << L" inst=" << instances << L" " << phase
+              << L" " << (i + 1) << L"/" << n;
+        run_status_ = title.str();
+        set_run_title(run_status_);
         render_frame();
+        return true;
+      };
+      for (uint32_t i = 0; i < cli.warmup; ++i) {
+        if (!tick(L"warmup", i, cli.warmup)) {
+          return 8;
+        }
       }
       std::vector<float> as_ms;
       std::vector<float> rt_ms;
@@ -529,7 +568,9 @@ int D3D12App::run_benchmark(const BenchmarkCli& cli, std::string& error) {
       fps.reserve(cli.frames);
       opencagert::DemoMetrics last{};
       for (uint32_t i = 0; i < cli.frames; ++i) {
-        render_frame();
+        if (!tick(L"measure", i, cli.frames)) {
+          return 8;
+        }
         last = dxr_micro_.metrics();
         fill_adapter_metrics(last);
         const opencagert::PathMetrics& path = mode.needs_classic ? last.classic : last.cage;
@@ -550,8 +591,10 @@ int D3D12App::run_benchmark(const BenchmarkCli& cli, std::string& error) {
           << last.dxgi_local_delta_mb << ',' << '"' << gpu_name_ << '"' << ',' << driver_version_
           << ',' << width_ << 'x' << height_ << ',' << OPENCAGERT_GIT_HASH << ',' << cli.warmup
           << ',' << cli.frames << '\n';
+      out.flush();
     }
   }
+  run_status_.clear();
   out.flush();
   return 0;
 }
@@ -568,6 +611,10 @@ int D3D12App::run_parity(std::string& error) {
 
   demo_.view_mode = opencagert::DemoViewMode::SoloClassic;
   for (int i = 0; i < 8; ++i) {
+    if (!pump_messages()) {
+      error = "parity cancelled";
+      return 8;
+    }
     render_frame();
   }
   std::vector<uint8_t> classic;
@@ -585,6 +632,10 @@ int D3D12App::run_parity(std::string& error) {
 
   demo_.view_mode = opencagert::DemoViewMode::SoloCageRT;
   for (int i = 0; i < 8; ++i) {
+    if (!pump_messages()) {
+      error = "parity cancelled";
+      return 8;
+    }
     render_frame();
   }
   std::vector<uint8_t> cage;
