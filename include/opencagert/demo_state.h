@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace opencagert {
 
@@ -10,10 +11,16 @@ enum class DemoViewMode : uint32_t {
   SoloCageRT = 2,
 };
 
+enum class ClassicBlasMode : uint32_t {
+  Rebuild = 0,
+  Update = 1,
+};
+
 enum DemoDebugFlag : uint32_t {
   DemoDebugShowCages = 1u << 0,
   DemoDebugFreezeGeometry = 1u << 1,
   DemoDebugRayPath = 1u << 2,
+  DemoDebugHideHud = 1u << 3,
 };
 
 // Scale ladder presets (triangle counts are targets for procedural scenes).
@@ -72,11 +79,19 @@ inline const char* tri_ladder_label(TriLadder level) {
   }
 }
 
+inline const char* classic_blas_mode_label(ClassicBlasMode mode) {
+  return mode == ClassicBlasMode::Update ? "update" : "rebuild";
+}
+
 struct PathMetrics {
-  float vram_mb = 0.f;
+  float tracked_mb = 0.f;
+  float geom_mb = 0.f;
+  float as_mb = 0.f;
   float as_update_ms = 0.f;
   float rt_ms = 0.f;
   float fps = 0.f;
+  // Alias used by older HUD/CSV call sites: sum of tracked RT resources, not process VRAM.
+  float vram_mb = 0.f;
 };
 
 struct DemoMetrics {
@@ -87,12 +102,18 @@ struct DemoMetrics {
   uint32_t instance_count = 0;
   uint32_t tet_count = 0;
   bool using_placeholders = true;
+  bool rt_times_combined = true;
+  float dxgi_local_mb = 0.f;
+  float dxgi_local_delta_mb = 0.f;
+  std::string gpu_name;
+  std::string driver_version;
 };
 
 struct DemoState {
   DemoViewMode view_mode = DemoViewMode::Split;
   TriLadder tri_level = TriLadder::K100;
   uint32_t debug_flags = DemoDebugShowCages;
+  ClassicBlasMode classic_blas_mode = ClassicBlasMode::Rebuild;
 
   void cycle_view_mode() {
     const auto v = static_cast<uint32_t>(view_mode);
@@ -115,6 +136,11 @@ struct DemoState {
   void toggle_classic_cage() {
     view_mode = (view_mode == DemoViewMode::SoloClassic) ? DemoViewMode::SoloCageRT
                                                          : DemoViewMode::SoloClassic;
+  }
+
+  void toggle_classic_blas_mode() {
+    classic_blas_mode = (classic_blas_mode == ClassicBlasMode::Rebuild) ? ClassicBlasMode::Update
+                                                                        : ClassicBlasMode::Rebuild;
   }
 };
 

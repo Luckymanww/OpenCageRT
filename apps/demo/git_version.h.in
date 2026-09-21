@@ -1,0 +1,4 @@
+#pragma once
+
+#define OPENCAGERT_VERSION "0.1.0"
+#define OPENCAGERT_GIT_HASH "@OPENCAGERT_GIT_HASH@"

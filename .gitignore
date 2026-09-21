@@ -12,3 +12,5 @@
 *.lib
 *.exp
 CMakeUserPresets.json
+/results.csv
+

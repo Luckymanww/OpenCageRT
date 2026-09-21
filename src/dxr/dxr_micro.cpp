@@ -158,11 +158,11 @@ bool DxrMicro::initialize(ID3D12Device* device, ID3D12CommandQueue* queue, uint3
 
     D3D12_QUERY_HEAP_DESC qh{};
     qh.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-    qh.Count = 4;
+    qh.Count = 6;
     throw_if_failed(device_->CreateQueryHeap(&qh, IID_PPV_ARGS(&timestamp_heap_)), "CreateQueryHeap");
     timestamp_readback_ =
-        create_buffer(device_.Get(), 32, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST,
-                      D3D12_RESOURCE_FLAG_NONE);
+        create_buffer(device_.Get(), sizeof(uint64_t) * 6, D3D12_HEAP_TYPE_READBACK,
+                      D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE);
     throw_if_failed(queue_->GetTimestampFrequency(&timestamp_freq_), "GetTimestampFrequency");
 
     if (!configure_instances(tri_ladder_instances(TriLadder::K100), error)) {
@@ -334,8 +334,12 @@ bool DxrMicro::create_geometry(std::string& error) {
   classic_vertex_count_ = proto_vertex_count_;
   classic_index_count_ = proto_index_count_;
 
-  classic_vb_ = create_buffer(device_.Get(), sizeof(Vec3) * proto_vertex_count_, D3D12_HEAP_TYPE_UPLOAD,
-                              D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+  classic_vb_staging_ =
+      create_buffer(device_.Get(), sizeof(Vec3) * proto_vertex_count_, D3D12_HEAP_TYPE_UPLOAD,
+                    D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+  classic_vb_ = create_buffer(device_.Get(), sizeof(Vec3) * proto_vertex_count_, D3D12_HEAP_TYPE_DEFAULT,
+                              D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE);
+  classic_vb_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
   cage_vb_ = create_buffer(device_.Get(), sizeof(Vec3) * proto_.cage_rest_vb.size(), D3D12_HEAP_TYPE_UPLOAD,
                            D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
   classic_ib_ = create_buffer(device_.Get(), sizeof(uint32_t) * proto_index_count_, D3D12_HEAP_TYPE_UPLOAD,
@@ -343,7 +347,7 @@ bool DxrMicro::create_geometry(std::string& error) {
   cage_ib_ = create_buffer(device_.Get(), sizeof(uint32_t) * proto_.cage_ib.size(), D3D12_HEAP_TYPE_UPLOAD,
                            D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
 
-  throw_if_failed(classic_vb_->Map(0, nullptr, &classic_vb_cpu_), "Map classic VB");
+  throw_if_failed(classic_vb_staging_->Map(0, nullptr, &classic_vb_cpu_), "Map classic VB staging");
   void* cage_cpu = nullptr;
   void* classic_ib_cpu = nullptr;
   void* cage_ib_cpu = nullptr;
@@ -377,6 +381,19 @@ bool DxrMicro::create_acceleration(std::string& error) {
     return g;
   };
 
+  init_list_->CopyBufferRegion(classic_vb_.Get(), 0, classic_vb_staging_.Get(), 0,
+                               sizeof(Vec3) * proto_vertex_count_);
+  {
+    D3D12_RESOURCE_BARRIER vb{};
+    vb.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    vb.Transition.pResource = classic_vb_.Get();
+    vb.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    vb.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    vb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    init_list_->ResourceBarrier(1, &vb);
+    classic_vb_state_ = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  }
+
   D3D12_RAYTRACING_GEOMETRY_DESC classic_geom =
       tri_geom(classic_vb_.Get(), classic_vertex_count_, 0, classic_ib_.Get(), classic_index_count_, 0);
 
@@ -391,12 +408,14 @@ bool DxrMicro::create_acceleration(std::string& error) {
   blas_in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
   blas_in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
   blas_in.NumDescs = 1;
-  blas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+  blas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD |
+                  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
 
   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO classic_info{};
   blas_in.pGeometryDescs = &classic_geom;
   device_->GetRaytracingAccelerationStructurePrebuildInfo(&blas_in, &classic_info);
 
+  blas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
   uint64_t cage_scratch = 0;
   uint64_t cage_result = 0;
   std::vector<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO> cage_infos(pieces_.size());
@@ -418,7 +437,9 @@ bool DxrMicro::create_acceleration(std::string& error) {
   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO cage_tlas_info{};
   device_->GetRaytracingAccelerationStructurePrebuildInfo(&tlas_in, &cage_tlas_info);
 
-  const uint64_t blas_scratch = align_up(std::max(classic_info.ScratchDataSizeInBytes, cage_scratch),
+  const uint64_t classic_scratch =
+      std::max(classic_info.ScratchDataSizeInBytes, classic_info.UpdateScratchDataSizeInBytes);
+  const uint64_t blas_scratch = align_up(std::max(classic_scratch, cage_scratch),
                                          D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
   const uint64_t tlas_scratch = align_up(std::max(classic_tlas_info.ScratchDataSizeInBytes,
                                                    cage_tlas_info.ScratchDataSizeInBytes),
@@ -505,18 +526,25 @@ uint64_t DxrMicro::gpu_bytes(ID3D12Resource* res) const {
 }
 
 void DxrMicro::update_vram_metrics() {
-  uint64_t classic = gpu_bytes(classic_vb_.Get()) + gpu_bytes(classic_ib_.Get()) +
-                     gpu_bytes(classic_tlas_.Get()) + gpu_bytes(classic_instances_.Get());
+  uint64_t classic_geom = gpu_bytes(classic_vb_.Get()) + gpu_bytes(classic_ib_.Get()) +
+                          gpu_bytes(classic_vb_staging_.Get());
+  uint64_t classic_as = gpu_bytes(classic_tlas_.Get()) + gpu_bytes(classic_instances_.Get());
   for (const auto& blas : classic_blas_) {
-    classic += gpu_bytes(blas.Get());
+    classic_as += gpu_bytes(blas.Get());
   }
-  uint64_t cage = gpu_bytes(cage_vb_.Get()) + gpu_bytes(cage_ib_.Get()) + gpu_bytes(cage_tlas_.Get()) +
-                  gpu_bytes(cage_instances_.Get());
+  uint64_t cage_geom = gpu_bytes(cage_vb_.Get()) + gpu_bytes(cage_ib_.Get());
+  uint64_t cage_as = gpu_bytes(cage_tlas_.Get()) + gpu_bytes(cage_instances_.Get());
   for (const auto& blas : cage_blas_) {
-    cage += gpu_bytes(blas.Get());
+    cage_as += gpu_bytes(blas.Get());
   }
-  metrics_.classic.vram_mb = static_cast<float>(classic) / (1024.f * 1024.f);
-  metrics_.cage.vram_mb = static_cast<float>(cage) / (1024.f * 1024.f);
+  auto fill = [](PathMetrics& m, uint64_t geom, uint64_t as) {
+    m.geom_mb = static_cast<float>(geom) / (1024.f * 1024.f);
+    m.as_mb = static_cast<float>(as) / (1024.f * 1024.f);
+    m.tracked_mb = m.geom_mb + m.as_mb;
+    m.vram_mb = m.tracked_mb;
+  };
+  fill(metrics_.classic, classic_geom, classic_as);
+  fill(metrics_.cage, cage_geom, cage_as);
   metrics_.instance_count = instance_count_;
   metrics_.tet_count = static_cast<uint32_t>(proto_.rest_tets.size());
   metrics_.triangle_count = (static_cast<uint64_t>(proto_index_count_) / 3) * instance_count_;
@@ -532,10 +560,7 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
     return true;
   }
   wait_for_gpu();
-  if (classic_vb_ && classic_vb_cpu_) {
-    classic_vb_->Unmap(0, nullptr);
-    classic_vb_cpu_ = nullptr;
-  }
+  release_classic_vertices();
   if (classic_instances_ && classic_instances_cpu_) {
     classic_instances_->Unmap(0, nullptr);
     classic_instances_cpu_ = nullptr;
@@ -544,7 +569,6 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
     cage_instances_->Unmap(0, nullptr);
     cage_instances_cpu_ = nullptr;
   }
-  classic_vb_.Reset();
   classic_ib_.Reset();
   classic_blas_.clear();
   classic_tlas_.Reset();
@@ -552,6 +576,7 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   cage_instances_.Reset();
   cage_tlas_.Reset();
   scratch_.Reset();
+  classic_blas_allow_update_ = false;
 
   instance_count_ = count;
   const bool unique_classic = count <= kClassicUniqueBlasMax;
@@ -559,9 +584,13 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   classic_index_count_ = proto_index_count_;
 
   if (unique_classic) {
-    classic_vb_ = create_buffer(device_.Get(), sizeof(Vec3) * classic_vertex_count_, D3D12_HEAP_TYPE_UPLOAD,
-                                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
-    throw_if_failed(classic_vb_->Map(0, nullptr, &classic_vb_cpu_), "Map classic VB instanced");
+    classic_vb_staging_ =
+        create_buffer(device_.Get(), sizeof(Vec3) * classic_vertex_count_, D3D12_HEAP_TYPE_UPLOAD,
+                      D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+    classic_vb_ = create_buffer(device_.Get(), sizeof(Vec3) * classic_vertex_count_, D3D12_HEAP_TYPE_DEFAULT,
+                                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE);
+    classic_vb_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
+    throw_if_failed(classic_vb_staging_->Map(0, nullptr, &classic_vb_cpu_), "Map classic VB staging");
   }
 
   classic_ib_ = create_buffer(device_.Get(), sizeof(uint32_t) * proto_index_count_, D3D12_HEAP_TYPE_UPLOAD,
@@ -587,7 +616,8 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   blas_in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
   blas_in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
   blas_in.NumDescs = 1;
-  blas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+  blas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD |
+                  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
   blas_in.pGeometryDescs = &geom;
   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO plant_info{};
   device_->GetRaytracingAccelerationStructurePrebuildInfo(&blas_in, &plant_info);
@@ -603,8 +633,9 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO cage_tlas_info{};
   device_->GetRaytracingAccelerationStructurePrebuildInfo(&tlas_in, &cage_tlas_info);
 
-  const uint64_t blas_scratch =
-      align_up(plant_info.ScratchDataSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
+  const uint64_t blas_scratch = align_up(
+      std::max(plant_info.ScratchDataSizeInBytes, plant_info.UpdateScratchDataSizeInBytes),
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
   const uint64_t tlas_scratch = align_up(std::max(classic_tlas_info.ScratchDataSizeInBytes,
                                                    cage_tlas_info.ScratchDataSizeInBytes),
                                          D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
@@ -661,6 +692,10 @@ void DxrMicro::record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoSta
       demo.view_mode != DemoViewMode::SoloCageRT && classic_blas_.size() == instance_count_ &&
       instance_count_ > 0;
   const bool need_cage = demo.view_mode != DemoViewMode::SoloClassic;
+  const bool classic_update = demo.classic_blas_mode == ClassicBlasMode::Update;
+  if (!need_classic || !classic_update) {
+    classic_blas_allow_update_ = false;
+  }
   const float time = freeze ? 0.f : static_cast<float>(frame_index) * 0.016f;
   const uint32_t n = instance_count_;
   auto* dst = static_cast<Vec3*>(classic_vb_cpu_);
@@ -749,12 +784,26 @@ void DxrMicro::record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoSta
 
   cmd_list->EndQuery(timestamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
   if (need_classic) {
+    copy_classic_vertices(cmd_list);
+    const bool perform_update = classic_update && classic_blas_allow_update_;
+    if (classic_update) {
+      blas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD |
+                      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+      if (perform_update) {
+        blas_in.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+      }
+    } else {
+      blas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+    }
     for (uint32_t inst = 0; inst < n; ++inst) {
       geom.Triangles.VertexBuffer.StartAddress =
           classic_vb_->GetGPUVirtualAddress() + static_cast<uint64_t>(inst) * proto_vertex_count_ * sizeof(Vec3);
       D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC blas{};
       blas.DestAccelerationStructureData = classic_blas_[inst]->GetGPUVirtualAddress();
       blas.Inputs = blas_in;
+      if (perform_update) {
+        blas.SourceAccelerationStructureData = classic_blas_[inst]->GetGPUVirtualAddress();
+      }
       blas.ScratchAccelerationStructureData = scratch_->GetGPUVirtualAddress() + classic_blas_scratch_;
       cmd_list->BuildRaytracingAccelerationStructure(&blas, 0, nullptr);
       D3D12_RESOURCE_BARRIER uavs[2]{};
@@ -764,6 +813,7 @@ void DxrMicro::record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoSta
       uavs[1].UAV.pResource = scratch_.Get();
       cmd_list->ResourceBarrier(2, uavs);
     }
+    classic_blas_allow_update_ = classic_update;
     build_tlas(classic_tlas_.Get(), classic_instances_.Get(), n, classic_tlas_scratch_);
   } else if (classic_tlas_) {
     build_tlas(classic_tlas_.Get(), nullptr, 0, classic_tlas_scratch_);
@@ -799,6 +849,7 @@ void DxrMicro::record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoSta
   cb->cage_vram_mb = metrics_.cage.vram_mb;
   cb->classic_as_ms = metrics_.classic.as_update_ms;
   cb->cage_as_ms = metrics_.cage.as_update_ms;
+  last_view_mode_ = demo.view_mode;
 
   auto* tet_out = static_cast<float*>(tet_cpu_);
   std::memset(tet_out, 0, sizeof(float) * 4 * 4 * kMicroMaxTets);
@@ -820,7 +871,7 @@ void DxrMicro::read_gpu_timestamps() {
   if (!timestamps_ready_ || !timestamp_readback_ || timestamp_freq_ == 0) {
     return;
   }
-  uint64_t stamps[4]{};
+  uint64_t stamps[6]{};
   void* mapped = nullptr;
   D3D12_RANGE range{0, sizeof(stamps)};
   if (FAILED(timestamp_readback_->Map(0, &range, &mapped)) || !mapped) {
@@ -839,9 +890,20 @@ void DxrMicro::read_gpu_timestamps() {
   };
   metrics_.classic.as_update_ms = ms(stamps[0], stamps[1]);
   metrics_.cage.as_update_ms = ms(stamps[1], stamps[2]);
-  const float rt = ms(stamps[2], stamps[3]);
-  metrics_.classic.rt_ms = rt;
-  metrics_.cage.rt_ms = rt;
+  const float rt = ms(stamps[3], stamps[4]);
+  if (last_view_mode_ == DemoViewMode::Split) {
+    metrics_.rt_times_combined = true;
+    metrics_.classic.rt_ms = rt;
+    metrics_.cage.rt_ms = rt;
+  } else if (last_view_mode_ == DemoViewMode::SoloClassic) {
+    metrics_.rt_times_combined = false;
+    metrics_.classic.rt_ms = rt;
+    metrics_.cage.rt_ms = 0.f;
+  } else {
+    metrics_.rt_times_combined = false;
+    metrics_.classic.rt_ms = 0.f;
+    metrics_.cage.rt_ms = rt;
+  }
 }
 
 void DxrMicro::resize(uint32_t width, uint32_t height) {
@@ -889,9 +951,10 @@ void DxrMicro::render(ID3D12GraphicsCommandList4* cmd_list, ID3D12Resource* back
   dispatch.Width = width_;
   dispatch.Height = height_;
   dispatch.Depth = 1;
-  cmd_list->DispatchRays(&dispatch);
   cmd_list->EndQuery(timestamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 3);
-  cmd_list->ResolveQueryData(timestamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 4,
+  cmd_list->DispatchRays(&dispatch);
+  cmd_list->EndQuery(timestamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 4);
+  cmd_list->ResolveQueryData(timestamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 6,
                              timestamp_readback_.Get(), 0);
   timestamps_ready_ = true;
 
@@ -923,6 +986,130 @@ void DxrMicro::render(ID3D12GraphicsCommandList4* cmd_list, ID3D12Resource* back
   cmd_list->ResourceBarrier(2, restore);
 }
 
+void DxrMicro::release_classic_vertices() {
+  if (classic_vb_staging_ && classic_vb_cpu_) {
+    classic_vb_staging_->Unmap(0, nullptr);
+    classic_vb_cpu_ = nullptr;
+  }
+  classic_vb_staging_.Reset();
+  classic_vb_.Reset();
+  classic_vb_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
+}
+
+void DxrMicro::transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* res,
+                          D3D12_RESOURCE_STATES& state, D3D12_RESOURCE_STATES after) {
+  if (!cmd || !res || state == after) {
+    return;
+  }
+  D3D12_RESOURCE_BARRIER b{};
+  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b.Transition.pResource = res;
+  b.Transition.StateBefore = state;
+  b.Transition.StateAfter = after;
+  b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  cmd->ResourceBarrier(1, &b);
+  state = after;
+}
+
+void DxrMicro::copy_classic_vertices(ID3D12GraphicsCommandList* cmd) {
+  if (!cmd || !classic_vb_ || !classic_vb_staging_ || classic_vertex_count_ == 0) {
+    return;
+  }
+  transition(cmd, classic_vb_.Get(), classic_vb_state_, D3D12_RESOURCE_STATE_COPY_DEST);
+  cmd->CopyBufferRegion(classic_vb_.Get(), 0, classic_vb_staging_.Get(), 0,
+                        sizeof(Vec3) * classic_vertex_count_);
+  transition(cmd, classic_vb_.Get(), classic_vb_state_, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+}
+
+bool DxrMicro::ensure_output_readback(std::string& error) {
+  if (!device_ || !output_texture_) {
+    error = "no output texture";
+    return false;
+  }
+  const D3D12_RESOURCE_DESC desc = output_texture_->GetDesc();
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+  UINT num_rows = 0;
+  UINT64 row_size = 0;
+  UINT64 total = 0;
+  device_->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &num_rows, &row_size, &total);
+  output_readback_pitch_ = footprint.Footprint.RowPitch;
+  if (output_readback_ && output_readback_->GetDesc().Width >= total) {
+    return true;
+  }
+  output_readback_.Reset();
+  try {
+    output_readback_ = create_buffer(device_.Get(), std::max<uint64_t>(total, 256), D3D12_HEAP_TYPE_READBACK,
+                                     D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_FLAG_NONE);
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return false;
+  }
+  return true;
+}
+
+bool DxrMicro::readback_output_rgba(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height,
+                                    uint32_t& row_pitch, std::string& error) {
+  if (!active_ || !init_alloc_ || !init_list_) {
+    error = "DXR not active";
+    return false;
+  }
+  wait_for_gpu();
+  if (!ensure_output_readback(error)) {
+    return false;
+  }
+  const D3D12_RESOURCE_DESC desc = output_texture_->GetDesc();
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+  UINT num_rows = 0;
+  UINT64 row_size = 0;
+  UINT64 total = 0;
+  device_->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &num_rows, &row_size, &total);
+
+  throw_if_failed(init_alloc_->Reset(), "Reset readback allocator");
+  throw_if_failed(init_list_->Reset(init_alloc_.Get(), nullptr), "Reset readback list");
+
+  D3D12_RESOURCE_BARRIER to_copy{};
+  to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  to_copy.Transition.pResource = output_texture_.Get();
+  to_copy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  to_copy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  to_copy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  init_list_->ResourceBarrier(1, &to_copy);
+
+  D3D12_TEXTURE_COPY_LOCATION dst{};
+  dst.pResource = output_readback_.Get();
+  dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  dst.PlacedFootprint = footprint;
+  D3D12_TEXTURE_COPY_LOCATION src{};
+  src.pResource = output_texture_.Get();
+  src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  src.SubresourceIndex = 0;
+  init_list_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+  D3D12_RESOURCE_BARRIER to_uav = to_copy;
+  to_uav.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  to_uav.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  init_list_->ResourceBarrier(1, &to_uav);
+  throw_if_failed(init_list_->Close(), "Close readback list");
+  ID3D12CommandList* lists[] = {init_list_.Get()};
+  queue_->ExecuteCommandLists(1, lists);
+  wait_for_gpu();
+
+  width = width_;
+  height = height_;
+  row_pitch = static_cast<uint32_t>(output_readback_pitch_);
+  rgba.assign(static_cast<size_t>(row_pitch) * height_, 0);
+  void* mapped = nullptr;
+  D3D12_RANGE range{0, static_cast<SIZE_T>(total)};
+  if (FAILED(output_readback_->Map(0, &range, &mapped)) || !mapped) {
+    error = "Map output readback failed";
+    return false;
+  }
+  std::memcpy(rgba.data(), mapped, static_cast<size_t>(row_pitch) * height_);
+  const D3D12_RANGE empty{0, 0};
+  output_readback_->Unmap(0, &empty);
+  return true;
+}
+
 void DxrMicro::wait_for_gpu() {
   if (!queue_ || !fence_) {
     return;
@@ -936,10 +1123,7 @@ void DxrMicro::wait_for_gpu() {
 
 void DxrMicro::shutdown() {
   wait_for_gpu();
-  if (classic_vb_ && classic_vb_cpu_) {
-    classic_vb_->Unmap(0, nullptr);
-    classic_vb_cpu_ = nullptr;
-  }
+  release_classic_vertices();
   if (classic_instances_ && classic_instances_cpu_) {
     classic_instances_->Unmap(0, nullptr);
     classic_instances_cpu_ = nullptr;
@@ -961,6 +1145,8 @@ void DxrMicro::shutdown() {
     fence_event_ = nullptr;
   }
   output_texture_.Reset();
+  output_readback_.Reset();
+  output_readback_pitch_ = 0;
   constant_buffer_.Reset();
   tet_buffer_.Reset();
   shader_table_.Reset();
@@ -968,6 +1154,7 @@ void DxrMicro::shutdown() {
   root_sig_.Reset();
   uav_heap_.Reset();
   classic_vb_.Reset();
+  classic_vb_staging_.Reset();
   cage_vb_.Reset();
   classic_ib_.Reset();
   cage_ib_.Reset();

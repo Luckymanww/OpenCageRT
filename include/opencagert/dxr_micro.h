@@ -12,7 +12,7 @@
 
 namespace opencagert {
 
-// M3: instanced plant field — Classic unique BLAS vs shared μBLAS + tetLAS.
+// Instanced plant field — Classic unique BLAS vs shared μBLAS + tetLAS.
 class DxrMicro {
  public:
   bool initialize(ID3D12Device* device, ID3D12CommandQueue* queue, uint32_t width, uint32_t height,
@@ -24,6 +24,8 @@ class DxrMicro {
 
   bool is_active() const { return active_; }
   DemoMetrics metrics() const { return metrics_; }
+  bool readback_output_rgba(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height,
+                            uint32_t& row_pitch, std::string& error);
 
  private:
   bool create_output(uint32_t width, uint32_t height, std::string& error);
@@ -36,6 +38,11 @@ class DxrMicro {
   void read_gpu_timestamps();
   void wait_for_gpu();
   void record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoState& demo, uint32_t frame_index);
+  void release_classic_vertices();
+  void transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* res, D3D12_RESOURCE_STATES& state,
+                  D3D12_RESOURCE_STATES after);
+  void copy_classic_vertices(ID3D12GraphicsCommandList* cmd);
+  bool ensure_output_readback(std::string& error);
 
   Microsoft::WRL::ComPtr<ID3D12Device5> device_;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue_;
@@ -56,12 +63,16 @@ class DxrMicro {
   Microsoft::WRL::ComPtr<ID3D12Resource> tet_buffer_;
   void* tet_cpu_ = nullptr;
   Microsoft::WRL::ComPtr<ID3D12Resource> output_texture_;
+  Microsoft::WRL::ComPtr<ID3D12Resource> output_readback_;
+  uint64_t output_readback_pitch_ = 0;
 
   Microsoft::WRL::ComPtr<ID3D12Resource> classic_vb_;
+  Microsoft::WRL::ComPtr<ID3D12Resource> classic_vb_staging_;
   Microsoft::WRL::ComPtr<ID3D12Resource> cage_vb_;
   Microsoft::WRL::ComPtr<ID3D12Resource> classic_ib_;
   Microsoft::WRL::ComPtr<ID3D12Resource> cage_ib_;
   void* classic_vb_cpu_ = nullptr;
+  D3D12_RESOURCE_STATES classic_vb_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
 
   std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> classic_blas_;
   std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> cage_blas_;
@@ -80,6 +91,7 @@ class DxrMicro {
   uint64_t classic_blas_scratch_ = 0;
   uint64_t cage_tlas_scratch_ = 0;
   uint64_t classic_tlas_scratch_ = 0;
+  bool classic_blas_allow_update_ = false;
 
   uint32_t width_ = 0;
   uint32_t height_ = 0;
@@ -93,6 +105,7 @@ class DxrMicro {
   Microsoft::WRL::ComPtr<ID3D12Resource> timestamp_readback_;
   uint64_t timestamp_freq_ = 0;
   bool timestamps_ready_ = false;
+  DemoViewMode last_view_mode_ = DemoViewMode::Split;
 };
 
 } // namespace opencagert

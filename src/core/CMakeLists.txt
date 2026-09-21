@@ -4,6 +4,7 @@ add_library(opencagert_core STATIC
   clipper.cpp
   animation.cpp
   micro_scene.cpp
+  image_parity.cpp
 )
 
 target_include_directories(opencagert_core PUBLIC

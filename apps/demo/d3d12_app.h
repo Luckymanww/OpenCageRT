@@ -7,6 +7,8 @@
 #include <opencagert/demo_state.h>
 #include <opencagert/dxr_micro.h>
 
+#include "cli.h"
+
 #include <cstdint>
 #include <string>
 #include <wrl/client.h>
@@ -18,6 +20,10 @@ class D3D12App {
   void render_frame();
   void shutdown();
   void handle_key(WPARAM key);
+  void set_vsync(bool enabled) { vsync_ = enabled; }
+
+  int run_benchmark(const BenchmarkCli& cli, std::string& error);
+  int run_parity(std::string& error);
 
   bool dxr_supported() const { return dxr_supported_; }
   const std::string& status_line() const { return status_line_; }
@@ -30,15 +36,21 @@ class D3D12App {
   void log_ladder_row(const opencagert::DemoMetrics& metrics);
   void start_tour();
   void tick_tour();
+  void fill_adapter_metrics(opencagert::DemoMetrics& metrics) const;
+  opencagert::TriLadder ladder_for_instances(uint32_t instances) const;
+  bool pump_messages();
+  void set_run_title(const std::wstring& extra);
 
   HWND hwnd_ = nullptr;
   uint32_t width_ = 0;
   uint32_t height_ = 0;
   bool dxr_supported_ = false;
+  bool vsync_ = true;
   std::string status_line_;
   opencagert::DemoState demo_{};
 
   Microsoft::WRL::ComPtr<IDXGIFactory4> factory_;
+  Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter_;
   Microsoft::WRL::ComPtr<ID3D12Device> device_;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue_;
   Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain_;
@@ -60,7 +72,12 @@ class D3D12App {
   opencagert::TriLadder logged_ladder_ = opencagert::TriLadder::Count;
   uint32_t logged_instances_ = 0;
   opencagert::DemoViewMode logged_view_ = opencagert::DemoViewMode::Split;
+  opencagert::ClassicBlasMode logged_classic_mode_ = opencagert::ClassicBlasMode::Rebuild;
   bool tour_active_ = false;
   uint32_t tour_step_ = 0;
   LARGE_INTEGER tour_step_start_{};
+  float dxgi_baseline_mb_ = 0.f;
+  std::string gpu_name_;
+  std::string driver_version_;
+  std::wstring run_status_;
 };

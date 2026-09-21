@@ -29,6 +29,7 @@ static const uint kSoloCage = 2;
 static const uint kShowCages = 1u << 0;
 static const uint kFreezeGeom = 1u << 1;
 static const uint kRayDebug = 1u << 2;
+static const uint kHideHud = 1u << 3;
 
 struct Payload {
   float3 color;
@@ -238,7 +239,7 @@ void RayGen() {
     col += float3(0.2, 0.85, 1.0) * smoothstep(0.004, 0.0, beam);
   }
 
-  if (panel.y > 0.80) {
+  if ((debugFlags & kHideHud) == 0 && panel.y > 0.80) {
     float3 head = classic ? float3(0.28, 0.07, 0.06) : float3(0.03, 0.18, 0.14);
     col = lerp(col, head, 0.92);
     float vmax = max(max(classicVramMb, cageVramMb), 0.05);
