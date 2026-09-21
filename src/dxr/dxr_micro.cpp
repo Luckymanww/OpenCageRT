@@ -527,7 +527,8 @@ void DxrMicro::update_vram_metrics() {
 bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   (void)error;
   count = std::max(1u, count);
-  if (count == instance_count_ && classic_vb_ && classic_blas_.size() == count) {
+  if (count == instance_count_ && cage_tlas_ &&
+      ((count > kClassicUniqueBlasMax && classic_blas_.empty()) || classic_blas_.size() == count)) {
     return true;
   }
   wait_for_gpu();
@@ -553,12 +554,15 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   scratch_.Reset();
 
   instance_count_ = count;
-  classic_vertex_count_ = proto_vertex_count_ * count;
+  const bool unique_classic = count <= kClassicUniqueBlasMax;
+  classic_vertex_count_ = unique_classic ? proto_vertex_count_ * count : proto_vertex_count_;
   classic_index_count_ = proto_index_count_;
 
-  classic_vb_ = create_buffer(device_.Get(), sizeof(Vec3) * classic_vertex_count_, D3D12_HEAP_TYPE_UPLOAD,
-                              D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
-  throw_if_failed(classic_vb_->Map(0, nullptr, &classic_vb_cpu_), "Map classic VB instanced");
+  if (unique_classic) {
+    classic_vb_ = create_buffer(device_.Get(), sizeof(Vec3) * classic_vertex_count_, D3D12_HEAP_TYPE_UPLOAD,
+                                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+    throw_if_failed(classic_vb_->Map(0, nullptr, &classic_vb_cpu_), "Map classic VB instanced");
+  }
 
   classic_ib_ = create_buffer(device_.Get(), sizeof(uint32_t) * proto_index_count_, D3D12_HEAP_TYPE_UPLOAD,
                               D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
@@ -572,7 +576,8 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   geom.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
   geom.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
   geom.Triangles.VertexCount = proto_vertex_count_;
-  geom.Triangles.VertexBuffer.StartAddress = classic_vb_->GetGPUVirtualAddress();
+  geom.Triangles.VertexBuffer.StartAddress =
+      unique_classic ? classic_vb_->GetGPUVirtualAddress() : cage_vb_->GetGPUVirtualAddress();
   geom.Triangles.VertexBuffer.StrideInBytes = sizeof(Vec3);
   geom.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
   geom.Triangles.IndexCount = proto_index_count_;
@@ -591,7 +596,7 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
   tlas_in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
   tlas_in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
   tlas_in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
-  tlas_in.NumDescs = count;
+  tlas_in.NumDescs = unique_classic ? count : 1;
   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO classic_tlas_info{};
   device_->GetRaytracingAccelerationStructurePrebuildInfo(&tlas_in, &classic_tlas_info);
   tlas_in.NumDescs = static_cast<UINT>(pieces_.size() * count);
@@ -616,20 +621,24 @@ bool DxrMicro::configure_instances(uint32_t count, std::string& error) {
                          D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
                          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
   };
-  classic_blas_.resize(count);
-  for (auto& blas : classic_blas_) {
-    blas = make_as(plant_info.ResultDataMaxSizeInBytes);
+  if (unique_classic) {
+    classic_blas_.resize(count);
+    for (auto& blas : classic_blas_) {
+      blas = make_as(plant_info.ResultDataMaxSizeInBytes);
+    }
   }
-  classic_tlas_ = make_as(classic_tlas_info.ResultDataMaxSizeInBytes);
+  classic_tlas_ = make_as(std::max<uint64_t>(classic_tlas_info.ResultDataMaxSizeInBytes, 256));
   cage_tlas_ = make_as(cage_tlas_info.ResultDataMaxSizeInBytes);
 
-  classic_instances_ =
-      create_buffer(device_.Get(), sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * count, D3D12_HEAP_TYPE_UPLOAD,
-                    D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+  if (unique_classic) {
+    classic_instances_ =
+        create_buffer(device_.Get(), sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * count, D3D12_HEAP_TYPE_UPLOAD,
+                      D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
+    throw_if_failed(classic_instances_->Map(0, nullptr, &classic_instances_cpu_), "Map classic inst N");
+  }
   cage_instances_ =
       create_buffer(device_.Get(), sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * pieces_.size() * count,
                     D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE);
-  throw_if_failed(classic_instances_->Map(0, nullptr, &classic_instances_cpu_), "Map classic inst N");
   throw_if_failed(cage_instances_->Map(0, nullptr, &cage_instances_cpu_), "Map cage inst N");
   update_vram_metrics();
   return true;
@@ -640,11 +649,17 @@ void DxrMicro::record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoSta
   const uint32_t want = tri_ladder_instances(demo.tri_level);
   if (want != instance_count_) {
     std::string err;
-    configure_instances(want, err);
+    try {
+      configure_instances(want, err);
+    } catch (const std::exception&) {
+      return;
+    }
   }
 
   const bool freeze = (demo.debug_flags & DemoDebugFreezeGeometry) != 0;
-  const bool need_classic = demo.view_mode != DemoViewMode::SoloCageRT;
+  const bool need_classic =
+      demo.view_mode != DemoViewMode::SoloCageRT && classic_blas_.size() == instance_count_ &&
+      instance_count_ > 0;
   const bool need_cage = demo.view_mode != DemoViewMode::SoloClassic;
   const float time = freeze ? 0.f : static_cast<float>(frame_index) * 0.016f;
   const uint32_t n = instance_count_;
@@ -720,7 +735,7 @@ void DxrMicro::record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoSta
     in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     in.NumDescs = num_descs;
     in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
-    in.InstanceDescs = instances->GetGPUVirtualAddress();
+    in.InstanceDescs = instances ? instances->GetGPUVirtualAddress() : 0;
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC d{};
     d.DestAccelerationStructureData = tlas->GetGPUVirtualAddress();
     d.Inputs = in;
@@ -750,6 +765,8 @@ void DxrMicro::record_builds(ID3D12GraphicsCommandList4* cmd_list, const DemoSta
       cmd_list->ResourceBarrier(2, uavs);
     }
     build_tlas(classic_tlas_.Get(), classic_instances_.Get(), n, classic_tlas_scratch_);
+  } else if (classic_tlas_) {
+    build_tlas(classic_tlas_.Get(), nullptr, 0, classic_tlas_scratch_);
   }
   cmd_list->EndQuery(timestamp_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
   if (need_cage) {

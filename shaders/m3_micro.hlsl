@@ -202,7 +202,7 @@ void RayGen() {
   ray.Origin = origin;
   ray.Direction = dir;
   ray.TMin = 0.001;
-  ray.TMax = 250.0;
+  ray.TMax = 400.0;
 
   if (classic) {
     TraceRay(g_tlasClassic, RAY_FLAG_FORCE_OPAQUE, 0xFF, 0, 1, 0, ray, p);

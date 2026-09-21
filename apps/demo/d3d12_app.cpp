@@ -233,11 +233,19 @@ void D3D12App::handle_key(WPARAM key) {
   switch (key) {
     case 'C':
     case 'c':
-      demo_.toggle_classic_cage();
+      if (opencagert::tri_ladder_instances(demo_.tri_level) > opencagert::kClassicUniqueBlasMax) {
+        demo_.view_mode = opencagert::DemoViewMode::SoloCageRT;
+      } else {
+        demo_.toggle_classic_cage();
+      }
       break;
     case 'S':
     case 's':
-      demo_.view_mode = opencagert::DemoViewMode::Split;
+      if (opencagert::tri_ladder_instances(demo_.tri_level) > opencagert::kClassicUniqueBlasMax) {
+        demo_.view_mode = opencagert::DemoViewMode::SoloCageRT;
+      } else {
+        demo_.view_mode = opencagert::DemoViewMode::Split;
+      }
       break;
     case 'G':
     case 'g':
@@ -270,6 +278,7 @@ void D3D12App::handle_key(WPARAM key) {
       break;
     case '4':
       demo_.tri_level = opencagert::TriLadder::M50;
+      demo_.view_mode = opencagert::DemoViewMode::SoloCageRT;
       break;
     case 'T':
     case 't':
@@ -307,7 +316,8 @@ void D3D12App::refresh_title() {
 }
 
 void D3D12App::log_ladder_row(const opencagert::DemoMetrics& metrics) {
-  if (metrics.using_placeholders || metrics.instance_count == 0 || metrics.classic.vram_mb <= 0.f) {
+  if (metrics.using_placeholders || metrics.instance_count == 0 ||
+      (metrics.classic.vram_mb <= 0.f && metrics.cage.vram_mb <= 0.f)) {
     return;
   }
   if (logged_ladder_ == metrics.tri_level && logged_instances_ == metrics.instance_count &&

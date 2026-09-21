@@ -30,15 +30,17 @@ inline uint32_t tri_ladder_instances(TriLadder level) {
     case TriLadder::K100:
       return 64;
     case TriLadder::M1:
-      return 256;
-    case TriLadder::M10:
       return 1024;
-    case TriLadder::M50:
+    case TriLadder::M10:
       return 4096;
+    case TriLadder::M50:
+      return 25000;
     default:
       return 64;
   }
 }
+
+inline constexpr uint32_t kClassicUniqueBlasMax = 4096;
 
 inline uint64_t tri_ladder_target(TriLadder level) {
   switch (level) {
@@ -58,13 +60,13 @@ inline uint64_t tri_ladder_target(TriLadder level) {
 inline const char* tri_ladder_label(TriLadder level) {
   switch (level) {
     case TriLadder::K100:
-      return "100K";
+      return "64";
     case TriLadder::M1:
-      return "1M";
+      return "1024";
     case TriLadder::M10:
-      return "10M";
+      return "4096";
     case TriLadder::M50:
-      return "50M";
+      return "25k";
     default:
       return "?";
   }
