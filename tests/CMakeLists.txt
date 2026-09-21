@@ -4,6 +4,7 @@ add_executable(opencagert_tests
   test_clipper.cpp
   test_cage_builder.cpp
   test_micro_scene.cpp
+  test_parity.cpp
 )
 
 target_link_libraries(opencagert_tests PRIVATE opencagert_core)

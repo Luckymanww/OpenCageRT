@@ -1,11 +1,14 @@
 #include "d3d12_app.h"
+#include "cli.h"
 
 #include "opencagert/cage_builder.h"
 #include "opencagert/types.h"
 
 #include <windows.h>
+#include <shellapi.h>
 
 #include <cmath>
+#include <cstdio>
 #include <sstream>
 #include <string>
 
@@ -58,9 +61,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   return DefWindowProc(hwnd, msg, wparam, lparam);
 }
 
+void attach_console() {
+  if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+    AllocConsole();
+  }
+  FILE* fp = nullptr;
+  freopen_s(&fp, "CONOUT$", "w", stdout);
+  freopen_s(&fp, "CONOUT$", "w", stderr);
+  freopen_s(&fp, "CONIN$", "r", stdin);
+}
+
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  BenchmarkCli cli;
+  std::string cli_error;
+  const bool cli_ok = argv && parse_demo_cli(argc, argv, cli, cli_error);
+  if (argv) {
+    LocalFree(argv);
+  }
+  if (!cli_ok) {
+    if (!cli_error.empty()) {
+      attach_console();
+      std::fprintf(stderr, "%s\n", cli_error.c_str());
+      MessageBoxA(nullptr, cli_error.c_str(), "OpenCageRT", MB_ICONINFORMATION);
+    }
+    return 1;
+  }
+  if (cli.benchmark || cli.parity) {
+    attach_console();
+  }
+
   opencagert::CageBuildOptions opts;
   opts.grid_x = opts.grid_y = 6;
   opts.grid_z = 8;
@@ -82,10 +115,13 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   RegisterClass(&wc);
 
-  constexpr int kWidth = 1280;
-  constexpr int kHeight = 720;
+  const int kWidth = static_cast<int>(cli.width);
+  const int kHeight = static_cast<int>(cli.height);
+  RECT wr{0, 0, kWidth, kHeight};
+  AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
   HWND hwnd = CreateWindow(wc.lpszClassName, g_title.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
-                           CW_USEDEFAULT, kWidth, kHeight, nullptr, nullptr, instance, nullptr);
+                           CW_USEDEFAULT, wr.right - wr.left, wr.bottom - wr.top, nullptr, nullptr,
+                           instance, nullptr);
   if (!hwnd) {
     return 1;
   }
@@ -93,10 +129,14 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
   D3D12App app;
   g_app = &app;
   std::string error;
-  if (!app.initialize(hwnd, kWidth, kHeight, error)) {
+  if (!app.initialize(hwnd, cli.width, cli.height, error)) {
+    attach_console();
+    std::fprintf(stderr, "init failed: %s\n", error.c_str());
     MessageBoxA(hwnd, error.c_str(), "OpenCageRT D3D12 init failed", MB_ICONERROR);
     return 1;
   }
+
+  app.set_vsync(cli.benchmark || cli.parity ? cli.vsync : true);
 
   std::wstring final_title = g_title + L" | " +
                              std::wstring(app.status_line().begin(), app.status_line().end());
@@ -104,6 +144,29 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_cmd) {
 
   ShowWindow(hwnd, show_cmd);
   UpdateWindow(hwnd);
+
+  if (cli.parity) {
+    const int code = app.run_parity(error);
+    std::fprintf(code == 0 ? stdout : stderr, "%s\n",
+                 error.empty() ? app.status_line().c_str() : error.c_str());
+    if (code != 0 || !cli.benchmark) {
+      app.shutdown();
+      g_app = nullptr;
+      return code;
+    }
+  }
+
+  if (cli.benchmark) {
+    const int code = app.run_benchmark(cli, error);
+    if (code != 0) {
+      std::fprintf(stderr, "benchmark failed: %s\n", error.c_str());
+    } else {
+      std::fprintf(stdout, "wrote %s\n", cli.csv.c_str());
+    }
+    app.shutdown();
+    g_app = nullptr;
+    return code;
+  }
 
   MSG msg{};
   while (msg.message != WM_QUIT) {

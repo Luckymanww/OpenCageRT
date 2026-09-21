@@ -232,7 +232,7 @@ Tune per scene; document in `docs/correctness.md`.
 2. **CPU cage trace:** tet walk + transform ray + μ triangle test in rest space.  
 3. **DXR parity:** same rays through Classic DXR vs CageRT DXR → compare hit/miss, `t`, `bary`, primitive id.  
 4. **Debug views:** tet wireframe, μBLAS bounds, instance index, transform determinant.  
-5. **Headless:** optional `--parity N` exit code for CI (no GPU compare until M3 stable).
+5. **Headless:** `--parity` exit code compares Classic vs CageRT barycentric RGB (HUD off). GPU required; not run on GitHub-hosted CI.
 
 ---
 
@@ -242,8 +242,10 @@ Per frame, per mode (Classic / CageRT):
 
 | Metric | Definition |
 |--------|------------|
-| Total VRAM | Sum committed size of GPU resources (approx) |
-| AS memory | BLAS + TLAS committed bytes |
+| Tracked RT memory | Sum of demo-owned VB/IB/BLAS/TLAS/instance buffers (not process VRAM) |
+| Geometry memory | Vertex/index buffers used as AS inputs |
+| AS memory | BLAS + TLAS + instance desc buffers |
+| DXGI local usage | `IDXGIAdapter3::QueryVideoMemoryInfo` (process-visible adapter local) |
 | BLAS build/update ms | GPU timestamp or CPU fence wait around AS commands |
 | TLAS build/update ms | same |
 | Ray trace ms | DispatchRays → fence |
@@ -262,7 +264,7 @@ HUD must show **both modes side-by-side** with **identical camera and time**. Th
 | CLASSIC DXR                         | CageRT                              |
 | same grass/trees, camera, rays      | same grass/trees, camera, rays      |
 | BLAS rebuilt as vertices animate    | static μ-geometry, animated cage    |
-| VRAM / AS update / RT / FPS         | VRAM / tetLAS update / RT / FPS     |
+| Tracked RT mem / AS update / RT / FPS | Tracked RT mem / tetLAS update / RT / FPS     |
 ```
 
 **Controls (v0.1 chrome, then real backends):**
@@ -276,10 +278,11 @@ HUD must show **both modes side-by-side** with **identical camera and time**. Th
 | **G** | Show cages (tet wireframe over plants) |
 | **F** | Freeze geometry (wind stops; later: mesh verts stay still while cage would still explain motion) |
 | **R** | Ray debug: camera → deformed tet → rest space → μBLAS hit |
+| **U** | Classic BLAS **Rebuild** vs **Update/Refit** (`ALLOW_UPDATE` / `PERFORM_UPDATE`) |
 
-**Numbers:** until M3/M4 backends exist, HUD may show **labeled estimates** (`HUD est.`) so the compare *format* is reviewable. Do **not** quote those estimates as benchmark results. Real VRAM / AS / RT come from GPU timestamps after Classic and CageRT paths exist.
+**Numbers:** HUD `ASmem` is tracked RT memory. Quote `--benchmark` CSV (warmup 60, 240 frames, median/p95, vsync off) rather than interactive split `rt_ms`. Split view still traces both paths in one `DispatchRays`, so RT is combined there; solo / `--benchmark` times Classic and CageRT separately.
 
-**GitHub clip (later):** 15–20 s of 1M → 10M → 50M with Classic VRAM bar climbing vs almost-flat CageRT. First visual prototype is the split chrome + **single-tet debug** (`R`), before millions of triangles.
+**GitHub clip (later):** 15–20 s of Classic Update ↔ CageRT. First visual prototype is the split chrome + **single-tet debug** (`R`).
 
 ---
 
@@ -323,14 +326,14 @@ Do **not** advance rung until:
 | **M1** | Minimal DXR project shell | Raygen gradient on GPU; DXR ON in title — **done 2026-09-21** |
 | **M1b** | Flagship compare chrome | Split Classic\|CageRT, keys C/S/G/F/R, ladder, HUD format (placeholders OK) |
 | **M2** | Repo layout + move CPU core to `geometry/` + `cage/` | Tests green; no duplicate demo DXR |
-| **M3** | **Micro correctness:** 1 mesh, 1 voxel, 5–6 tets, μBLAS, simple deform | Classic hit == Cage hit (rays + image) |
-| **M4** | HUD metrics (both paths) | Numbers visible, same scene |
+| **M3** | **Micro correctness:** 1 mesh, voxel cage, μBLAS, simple deform | **done 2026-09-21** (visual + `--parity` bary RGB gate) |
+| **M4** | HUD metrics (both paths) | **done** — tracked RT mem / AS / RT; Classic Rebuild vs Update |
 | **M5** | Clipper hardening + oracle tests | Unit tests for shared edges |
-| **M6** | Scale 100K → 1M | Parity + metrics CSV |
+| **M6** | Scale 100K → 1M | `--benchmark` CSV + parity |
 | **M7** | Scale 10M → 50M | Document where Classic OOMs / CageRT survives |
 
 **First runnable milestone after spec:** **M1** (DXR shell only).  
-**First scientific milestone:** **M3** (parity).
+**First scientific milestone:** **M3** (parity) — **landed**; remaining work is honest Classic Update numbers, CSV methodology, then AMD GPU CSV.
 
 ---
 
@@ -354,8 +357,8 @@ Already present (keep, refactor per §5):
 
 - `include/opencagert/*` — math, cage builder (voxel + clip), animation  
 - `tests/*` — CPU tests (math, clipper, cage build) — **passing**  
-- `apps/demo` — D3D12 swapchain only; **not** a parity DXR path yet  
-- WIP to **freeze:** `apps/demo/dxr_renderer.h`, `apps/demo/shaders/raytracing.hlsl`
+- `apps/demo` — D3D12/DXR flagship: Classic Rebuild, Classic Update/Refit, CageRT, `--benchmark`, `--parity`
+- CPU tests include image-parity helper + percentile
 
 ---
 

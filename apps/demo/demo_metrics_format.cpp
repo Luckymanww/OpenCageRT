@@ -29,7 +29,10 @@ std::wstring format_demo_title(const opencagert::DemoState& state, const opencag
   std::wostringstream oss;
   oss << base_title << L" M3 field | inst=" << metrics.instance_count << L" tris="
       << metrics.triangle_count;
-  if (metrics.cage.vram_mb > 0.001f) {
+  if (metrics.cage.tracked_mb > 0.001f) {
+    oss << L" | x" << std::fixed << std::setprecision(1)
+        << (metrics.classic.tracked_mb / metrics.cage.tracked_mb);
+  } else if (metrics.cage.vram_mb > 0.001f) {
     oss << L" | x" << std::fixed << std::setprecision(1)
         << (metrics.classic.vram_mb / metrics.cage.vram_mb);
   }
@@ -45,12 +48,16 @@ std::wstring format_demo_title(const opencagert::DemoState& state, const opencag
     oss << L" | raydbg";
   }
 
-  oss << L" || Classic VRAM=" << std::fixed << std::setprecision(2) << metrics.classic.vram_mb << L"MB"
+  oss << L" || Classic(" << narrow_to_wide(opencagert::classic_blas_mode_label(state.classic_blas_mode))
+      << L") ASmem=" << std::fixed << std::setprecision(2)
+      << (metrics.classic.tracked_mb > 0.f ? metrics.classic.tracked_mb : metrics.classic.vram_mb)
+      << L"MB"
       << L" AS=" << std::setprecision(2) << metrics.classic.as_update_ms << L"ms"
       << L" RT=" << metrics.classic.rt_ms << L"ms"
       << L" FPS=" << std::setprecision(0) << metrics.classic.fps;
 
-  oss << L" || Cage VRAM=" << std::setprecision(2) << metrics.cage.vram_mb << L"MB"
+  oss << L" || Cage ASmem=" << std::setprecision(2)
+      << (metrics.cage.tracked_mb > 0.f ? metrics.cage.tracked_mb : metrics.cage.vram_mb) << L"MB"
       << L" tetLAS=" << metrics.cage.as_update_ms << L"ms"
       << L" RT=" << metrics.cage.rt_ms << L"ms"
       << L" FPS=" << std::setprecision(0) << metrics.cage.fps;

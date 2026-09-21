@@ -33,11 +33,15 @@ opencagert::DemoMetrics compute_placeholder_metrics(opencagert::TriLadder level,
   const float fps = frame_ms > 0.f ? 1000.f / frame_ms : 0.f;
 
   m.classic.vram_mb = 800.f + s * 11200.f;
+  m.classic.tracked_mb = m.classic.vram_mb;
+  m.classic.as_mb = m.classic.vram_mb;
   m.classic.as_update_ms = 0.4f + s * 14.f;
   m.classic.rt_ms = 1.2f + s * 22.f;
   m.classic.fps = std::max(8.f, 120.f - s * 92.f);
 
   m.cage.vram_mb = 180.f + s * 420.f;
+  m.cage.tracked_mb = m.cage.vram_mb;
+  m.cage.as_mb = m.cage.vram_mb;
   m.cage.as_update_ms = 0.15f + s * 1.2f;
   m.cage.rt_ms = 1.1f + s * 4.5f;
   m.cage.fps = std::max(24.f, 118.f - s * 28.f);

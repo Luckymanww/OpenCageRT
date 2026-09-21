@@ -1,5 +1,8 @@
 #include "d3d12_app.h"
 #include "demo_metrics.h"
+#include "git_version.h"
+
+#include "opencagert/image_parity.h"
 
 #include <dxgi1_6.h>
 #include <d3d12.h>
@@ -8,6 +11,8 @@
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
+#include <cwchar>
 
 using Microsoft::WRL::ComPtr;
 
@@ -58,6 +63,13 @@ bool D3D12App::initialize(HWND hwnd, uint32_t width, uint32_t height, std::strin
     QueryPerformanceFrequency(&qpc_freq_);
     QueryPerformanceCounter(&qpc_last_);
 
+    if (adapter_) {
+      DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+      if (SUCCEEDED(adapter_->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
+        dxgi_baseline_mb_ = static_cast<float>(info.CurrentUsage) / (1024.f * 1024.f);
+      }
+    }
+
     std::ostringstream oss;
     oss << "OpenCageRT M3 micro | DXR "
         << (dxr_micro_.is_active() ? "ON" : (dxr_error.empty() ? "OFF" : dxr_error));
@@ -88,6 +100,16 @@ bool D3D12App::create_device(std::string& error) {
       continue;
     }
     if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device_)))) {
+      adapter.As(&adapter_);
+      gpu_name_ = wide_to_utf8(desc.Description);
+      LARGE_INTEGER umd{};
+      if (SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))) {
+        const uint64_t ver = static_cast<uint64_t>(umd.QuadPart);
+        std::ostringstream drv;
+        drv << ((ver >> 48) & 0xFFFF) << '.' << ((ver >> 32) & 0xFFFF) << '.'
+            << ((ver >> 16) & 0xFFFF) << '.' << (ver & 0xFFFF);
+        driver_version_ = drv.str();
+      }
       break;
     }
     device_.Reset();
@@ -210,7 +232,7 @@ void D3D12App::render_frame() {
 
   ID3D12CommandList* lists[] = {cmd_list_.Get()};
   queue_->ExecuteCommandLists(1, lists);
-  swapchain_->Present(1, 0);
+  swapchain_->Present(vsync_ ? 1 : 0, 0);
   ++fence_value_;
   queue_->Signal(fence_.Get(), fence_value_);
   frame_index_ = swapchain_->GetCurrentBackBufferIndex();
@@ -259,6 +281,10 @@ void D3D12App::handle_key(WPARAM key) {
     case 'r':
       demo_.toggle_debug(opencagert::DemoDebugRayPath);
       break;
+    case 'U':
+    case 'u':
+      demo_.toggle_classic_blas_mode();
+      break;
     case VK_LEFT:
     case VK_OEM_4: // [
       demo_.step_tri_level(-1);
@@ -301,10 +327,19 @@ void D3D12App::refresh_title() {
   opencagert::DemoMetrics metrics = dxr_micro_.is_active()
                                         ? dxr_micro_.metrics()
                                         : compute_placeholder_metrics(demo_.tri_level, frame_ms_);
+  fill_adapter_metrics(metrics);
   const float fps = frame_ms_ > 0.f ? 1000.f / frame_ms_ : 0.f;
   if (!metrics.using_placeholders) {
-    metrics.classic.fps = fps;
-    metrics.cage.fps = fps;
+    if (demo_.view_mode == opencagert::DemoViewMode::SoloClassic) {
+      metrics.classic.fps = fps;
+      metrics.cage.fps = 0.f;
+    } else if (demo_.view_mode == opencagert::DemoViewMode::SoloCageRT) {
+      metrics.classic.fps = 0.f;
+      metrics.cage.fps = fps;
+    } else {
+      metrics.classic.fps = fps;
+      metrics.cage.fps = fps;
+    }
   }
   const std::wstring title = format_demo_title(demo_, metrics, L"OpenCageRT");
   if (tour_active_) {
@@ -317,16 +352,18 @@ void D3D12App::refresh_title() {
 
 void D3D12App::log_ladder_row(const opencagert::DemoMetrics& metrics) {
   if (metrics.using_placeholders || metrics.instance_count == 0 ||
-      (metrics.classic.vram_mb <= 0.f && metrics.cage.vram_mb <= 0.f)) {
+      (metrics.classic.tracked_mb <= 0.f && metrics.classic.vram_mb <= 0.f &&
+       metrics.cage.tracked_mb <= 0.f && metrics.cage.vram_mb <= 0.f)) {
     return;
   }
   if (logged_ladder_ == metrics.tri_level && logged_instances_ == metrics.instance_count &&
-      logged_view_ == demo_.view_mode) {
+      logged_view_ == demo_.view_mode && logged_classic_mode_ == demo_.classic_blas_mode) {
     return;
   }
   logged_ladder_ = metrics.tri_level;
   logged_instances_ = metrics.instance_count;
   logged_view_ = demo_.view_mode;
+  logged_classic_mode_ = demo_.classic_blas_mode;
 
   wchar_t exe_path[MAX_PATH]{};
   GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
@@ -343,8 +380,9 @@ void D3D12App::log_ladder_row(const opencagert::DemoMetrics& metrics) {
     return;
   }
   if (write_header) {
-    out << "view,instances,tris,classic_vram_mb,cage_vram_mb,ratio,classic_as_ms,cage_tetlas_ms,"
-           "rt_ms,fps\n";
+    out << "view,classic_mode,instances,tris,classic_tracked_mb,classic_geom_mb,classic_as_mb,"
+           "cage_tracked_mb,cage_geom_mb,cage_as_mb,ratio,classic_as_ms,cage_tetlas_ms,"
+           "classic_rt_ms,cage_rt_ms,rt_combined,fps,dxgi_local_mb\n";
   }
   const char* view = "split";
   if (demo_.view_mode == opencagert::DemoViewMode::SoloClassic) {
@@ -353,11 +391,15 @@ void D3D12App::log_ladder_row(const opencagert::DemoMetrics& metrics) {
     view = "cage";
   }
   const float ratio =
-      metrics.cage.vram_mb > 0.001f ? metrics.classic.vram_mb / metrics.cage.vram_mb : 0.f;
-  out << view << ',' << std::fixed << std::setprecision(3) << metrics.instance_count << ','
-      << metrics.triangle_count << ',' << metrics.classic.vram_mb << ',' << metrics.cage.vram_mb << ','
-      << ratio << ',' << metrics.classic.as_update_ms << ',' << metrics.cage.as_update_ms << ','
-      << metrics.classic.rt_ms << ',' << metrics.classic.fps << '\n';
+      metrics.cage.tracked_mb > 0.001f ? metrics.classic.tracked_mb / metrics.cage.tracked_mb : 0.f;
+  out << view << ',' << opencagert::classic_blas_mode_label(demo_.classic_blas_mode) << ','
+      << std::fixed << std::setprecision(3) << metrics.instance_count << ','
+      << metrics.triangle_count << ',' << metrics.classic.tracked_mb << ',' << metrics.classic.geom_mb
+      << ',' << metrics.classic.as_mb << ',' << metrics.cage.tracked_mb << ',' << metrics.cage.geom_mb
+      << ',' << metrics.cage.as_mb << ',' << ratio << ',' << metrics.classic.as_update_ms << ','
+      << metrics.cage.as_update_ms << ',' << metrics.classic.rt_ms << ',' << metrics.cage.rt_ms << ','
+      << (metrics.rt_times_combined ? 1 : 0) << ',' << metrics.classic.fps << ','
+      << metrics.dxgi_local_mb << '\n';
 }
 
 void D3D12App::start_tour() {
@@ -410,6 +452,173 @@ void D3D12App::tick_tour() {
   refresh_title();
 }
 
+void D3D12App::fill_adapter_metrics(opencagert::DemoMetrics& metrics) const {
+  metrics.gpu_name = gpu_name_;
+  metrics.driver_version = driver_version_;
+  if (!adapter_) {
+    return;
+  }
+  DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+  if (SUCCEEDED(adapter_->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
+    metrics.dxgi_local_mb = static_cast<float>(info.CurrentUsage) / (1024.f * 1024.f);
+    metrics.dxgi_local_delta_mb = metrics.dxgi_local_mb - dxgi_baseline_mb_;
+  }
+}
+
+opencagert::TriLadder D3D12App::ladder_for_instances(uint32_t instances) const {
+  for (uint32_t i = 0; i < static_cast<uint32_t>(opencagert::TriLadder::Count); ++i) {
+    const auto level = static_cast<opencagert::TriLadder>(i);
+    if (opencagert::tri_ladder_instances(level) == instances) {
+      return level;
+    }
+  }
+  return opencagert::TriLadder::Count;
+}
+
+int D3D12App::run_benchmark(const BenchmarkCli& cli, std::string& error) {
+  if (!dxr_micro_.is_active()) {
+    error = "DXR is not active; cannot benchmark";
+    return 2;
+  }
+  vsync_ = cli.vsync;
+  demo_.debug_flags &= ~opencagert::DemoDebugShowCages;
+  demo_.debug_flags |= opencagert::DemoDebugHideHud;
+
+  std::ofstream out(cli.csv, std::ios::out | std::ios::trunc);
+  if (!out) {
+    error = "failed to open CSV: " + cli.csv;
+    return 3;
+  }
+  out << "mode,instances,tris,tracked_mb,geom_mb,as_mb,as_update_ms_median,as_update_ms_p95,"
+         "rt_ms_median,rt_ms_p95,fps_median,fps_p95,dxgi_local_mb,dxgi_delta_mb,gpu,driver,"
+         "resolution,commit,warmup,frames\n";
+
+  struct Mode {
+    const char* name;
+    opencagert::DemoViewMode view;
+    opencagert::ClassicBlasMode classic;
+    bool needs_classic;
+  };
+  const Mode modes[] = {
+      {"classic_rebuild", opencagert::DemoViewMode::SoloClassic, opencagert::ClassicBlasMode::Rebuild,
+       true},
+      {"classic_update", opencagert::DemoViewMode::SoloClassic, opencagert::ClassicBlasMode::Update, true},
+      {"cagert", opencagert::DemoViewMode::SoloCageRT, opencagert::ClassicBlasMode::Rebuild, false},
+  };
+
+  for (uint32_t instances : cli.instances) {
+    demo_.tri_level = ladder_for_instances(instances);
+    if (demo_.tri_level == opencagert::TriLadder::Count) {
+      error = "unsupported --instances value (use 64,1024,4096,25000)";
+      return 7;
+    }
+    for (const Mode& mode : modes) {
+      if (mode.needs_classic && instances > opencagert::kClassicUniqueBlasMax) {
+        continue;
+      }
+      demo_.view_mode = mode.view;
+      demo_.classic_blas_mode = mode.classic;
+      for (uint32_t i = 0; i < cli.warmup; ++i) {
+        render_frame();
+      }
+      std::vector<float> as_ms;
+      std::vector<float> rt_ms;
+      std::vector<float> fps;
+      as_ms.reserve(cli.frames);
+      rt_ms.reserve(cli.frames);
+      fps.reserve(cli.frames);
+      opencagert::DemoMetrics last{};
+      for (uint32_t i = 0; i < cli.frames; ++i) {
+        render_frame();
+        last = dxr_micro_.metrics();
+        fill_adapter_metrics(last);
+        const opencagert::PathMetrics& path = mode.needs_classic ? last.classic : last.cage;
+        as_ms.push_back(path.as_update_ms);
+        rt_ms.push_back(path.rt_ms);
+        const float frame_fps = frame_ms_ > 0.f ? 1000.f / frame_ms_ : 0.f;
+        fps.push_back(frame_fps);
+      }
+      const opencagert::PathMetrics& path = mode.needs_classic ? last.classic : last.cage;
+      out << mode.name << ',' << last.instance_count << ',' << last.triangle_count << ','
+          << std::fixed << std::setprecision(4) << path.tracked_mb << ',' << path.geom_mb << ','
+          << path.as_mb << ',' << opencagert::percentile_sorted(as_ms, 0.5f) << ','
+          << opencagert::percentile_sorted(as_ms, 0.95f) << ','
+          << opencagert::percentile_sorted(rt_ms, 0.5f) << ','
+          << opencagert::percentile_sorted(rt_ms, 0.95f) << ','
+          << opencagert::percentile_sorted(fps, 0.5f) << ','
+          << opencagert::percentile_sorted(fps, 0.95f) << ',' << last.dxgi_local_mb << ','
+          << last.dxgi_local_delta_mb << ',' << '"' << gpu_name_ << '"' << ',' << driver_version_
+          << ',' << width_ << 'x' << height_ << ',' << OPENCAGERT_GIT_HASH << ',' << cli.warmup
+          << ',' << cli.frames << '\n';
+    }
+  }
+  out.flush();
+  return 0;
+}
+
+int D3D12App::run_parity(std::string& error) {
+  if (!dxr_micro_.is_active()) {
+    error = "DXR is not active; cannot run parity";
+    return 2;
+  }
+  demo_.tri_level = opencagert::TriLadder::K100;
+  demo_.debug_flags = opencagert::DemoDebugFreezeGeometry | opencagert::DemoDebugHideHud;
+  demo_.classic_blas_mode = opencagert::ClassicBlasMode::Update;
+  vsync_ = false;
+
+  demo_.view_mode = opencagert::DemoViewMode::SoloClassic;
+  for (int i = 0; i < 8; ++i) {
+    render_frame();
+  }
+  std::vector<uint8_t> classic;
+  uint32_t w = 0;
+  uint32_t h = 0;
+  uint32_t pitch = 0;
+  try {
+    if (!dxr_micro_.readback_output_rgba(classic, w, h, pitch, error)) {
+      return 4;
+    }
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return 4;
+  }
+
+  demo_.view_mode = opencagert::DemoViewMode::SoloCageRT;
+  for (int i = 0; i < 8; ++i) {
+    render_frame();
+  }
+  std::vector<uint8_t> cage;
+  uint32_t w2 = 0;
+  uint32_t h2 = 0;
+  uint32_t pitch2 = 0;
+  try {
+    if (!dxr_micro_.readback_output_rgba(cage, w2, h2, pitch2, error)) {
+      return 4;
+    }
+  } catch (const std::exception& ex) {
+    error = ex.what();
+    return 4;
+  }
+  if (w != w2 || h != h2 || pitch != pitch2) {
+    error = "parity readback size mismatch";
+    return 5;
+  }
+
+  opencagert::ImageParityOptions opts{};
+  opts.max_channel_delta = 8;
+  const auto stats = opencagert::compare_rgba8(classic.data(), cage.data(), w, h, pitch, opts);
+  std::ostringstream oss;
+  oss << "parity compared=" << stats.compared << " mismatches=" << stats.mismatches
+      << " rate=" << std::fixed << std::setprecision(6) << stats.mismatch_rate
+      << " max_delta=" << stats.max_channel_delta;
+  status_line_ = oss.str();
+  if (stats.mismatch_rate > 0.002f) {
+    error = status_line_;
+    return 6;
+  }
+  return 0;
+}
+
 void D3D12App::wait_for_gpu() {
   if (!fence_) {
     return;
@@ -438,5 +647,6 @@ void D3D12App::shutdown() {
   fence_.Reset();
   queue_.Reset();
   device_.Reset();
+  adapter_.Reset();
   factory_.Reset();
 }
